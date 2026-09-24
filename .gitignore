@@ -1,0 +1,13 @@
+*.o
+*.so
+*.a
+bin/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.bin
+*.enc
+*.dec
