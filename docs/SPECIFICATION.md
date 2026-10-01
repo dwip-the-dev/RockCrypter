@@ -1,152 +1,120 @@
-# RockCrypter — Cryptographic Specification v1.0
+# CryptoVault — Complete System Architecture & Cryptographic Specification v2.4
 
 ## 1. Overview and Core Philosophy
 
-RockCrypter is an experimental, high-assurance cryptographic system engineered from first principles. It combines a zero-trust multi-layer pipeline with novel symmetric primitives, memory-hard key derivation, and authenticated framing.
+**CryptoVault** is a high-assurance cryptographic storage and authenticated transport system engineered from first principles. It combines a zero-trust multi-layer pipeline with novel symmetric primitives, 1 MiB base memory-hard key derivation, cascaded dual-layer encryption, asymmetric hybrid public-key encryption (HPKE), information-theoretic secret sharing, and ratcheted tamper-proof authenticated framing.
 
-### Cryptographic Distinction
-RockCrypter is designed for **cryptographic research, formal validation, and architectural evaluation**. While designed to meet stringent theoretical requirements (IND-CCA2 security, Strict Avalanche Criterion, resistance to timing side channels), any non-standardized primitive must undergo open public cryptanalysis before deployment in production environments.
-
----
-
-## 2. Primitive Specifications
-
-### 2.1 RockSponge-512 (Cryptographic Sponge)
-
-RockSponge-512 is a 512-bit wide-state permutation operating in the sponge framework:
-* **Total State Size ($b$)**: 512 bits (64 bytes), organized as 8 $\times$ 64-bit words ($S_0 \dots S_7$).
-* **Rate ($r$)**: 256 bits (32 bytes), words $S_0 \dots S_3$.
-* **Capacity ($c$)**: 256 bits (32 bytes), words $S_4 \dots S_7$.
-* **Security Bounds**:
-  * Collision Resistance: $c/2 = 128$ bits.
-  * Pre-image Resistance: $c = 256$ bits.
-* **Permutation Rounds**: 24 rounds of heavy non-linear and linear mixing.
-
-#### Round Function
-For round $r \in [0, 23]$:
-1. **Constant Injection**:
-   $$S_0 \oplus= RC[r], \quad S_4 \oplus= \text{ROTL64}(RC[r], 31)$$
-   where $RC[r]$ are fractional 64-bit nothing-up-my-sleeve constants derived from square roots of prime numbers ($\sqrt{2}, \sqrt{3}, \dots$).
-2. **Non-Linear Quadratic $\chi$-Mapping (Algebraic Degree 2)**:
-   For $i \in [0, 7]$:
-   $$T_i = S_i \oplus (\sim S_{(i+1) \pmod 8} \ \& \ S_{(i+2) \pmod 8})$$
-3. **Cross-Word ARX Diffusion**:
-   $$\begin{aligned}
-   S_0 &= (T_0 + T_1) \oplus \text{ROTL64}(T_4, 19) \\
-   S_1 &= (T_1 + T_2) \oplus \text{ROTL64}(T_5, 31) \\
-   S_2 &= (T_2 + T_3) \oplus \text{ROTL64}(T_6, 43) \\
-   S_3 &= (T_3 + T_4) \oplus \text{ROTL64}(T_7, 53) \\
-   S_4 &= (T_4 + T_5) \oplus \text{ROTL64}(T_0, 11) \\
-   S_5 &= (T_5 + T_6) \oplus \text{ROTL64}(T_1, 23) \\
-   S_6 &= (T_6 + T_7) \oplus \text{ROTL64}(T_2, 37) \\
-   S_7 &= (T_7 + T_0) \oplus \text{ROTL64}(T_3, 47)
-   \end{aligned}$$
+### Cryptographic Distinction & Academic Context
+CryptoVault is developed for **cryptographic research, academic capstone evaluation, and high-assurance security engineering**. It provides mathematical proofs of correctness, IND-CCA2 security reductions, empirical avalanche criteria verification, and full constant-time side-channel resistance.
 
 ---
 
-### 2.2 RockCore-256 (Block / Core Primitive)
+## 2. Complete Architecture & Modular Layout
 
-RockCore-256 is a 256-bit block cipher utilizing a Substitution-Permutation-ARX (SP-ARX) network over 32 rounds.
+All headers and source files use clean, prefix-free modular naming across both C and Python:
 
-* **State**: 256 bits (32 bytes), represented as 4 $\times$ 64-bit words ($A, B, C, D$) or a $4 \times 8$ byte matrix.
-* **Key Size**: 256 bits (32 bytes).
-* **Rounds**: 32 rounds + pre-whitening.
-
-#### Layers per Round:
-1. **Non-Linear Substitution Layer ($S$-Box)**:
-   - 8x8 bijective Galois S-box derived from $x \mapsto x^{-1} \in \text{GF}(2^8)$ (polynomial $x^8 + x^4 + x^3 + x + 1$) combined with affine transformation and constant $0x63$.
-   - **Properties**: Non-linearity = 112, differential uniformity = 4, algebraic degree = 7, zero fixed points ($S[x] \neq x$), zero reverse fixed points ($S[x] \neq \bar{x}$).
-2. **Byte-Level Linear Diffusion (ShiftRows)**:
-   - Row 0 (bytes 0..7): shift 0
-   - Row 1 (bytes 8..15): cyclic rotate left 1
-   - Row 2 (bytes 16..23): cyclic rotate left 3
-   - Row 3 (bytes 24..31): cyclic rotate left 5
-3. **Word-Level ARX Mixing**:
-   $$\begin{aligned}
-   A_{r} &= (A_{r-1} + B_{r-1}) \oplus \text{ROTL64}(D_{r-1}, 17) \\
-   C_{r} &= (C_{r-1} + D_{r-1}) \oplus \text{ROTL64}(B_{r-1}, 31) \\
-   B_{r} &= (B_{r-1} + C_{r}) \oplus \text{ROTL64}(A_{r}, 43) \\
-   D_{r} &= (D_{r-1} + A_{r}) \oplus \text{ROTL64}(C_{r}, 25)
-   \end{aligned}$$
-   This step is an unrolled Feistel-like construction, guaranteeing exact mathematical invertibility for decryption.
-4. **Key Addition Layer**:
-   $$A \oplus= K_{r, 0}, \quad B \oplus= K_{r, 1}, \quad C \oplus= K_{r, 2}, \quad D \oplus= K_{r, 3}$$
-
-#### Key Schedule:
-Expands 256-bit key into 33 subkeys (132 64-bit words) using dynamic S-box word substitution, golden-ratio constants ($\Phi = \lfloor 2^{64} \times (\sqrt{5}-1)/2 \rfloor = \text{0x9E3779B97F4A7C15}$), and nothing-up-my-sleeve round constants.
-
----
-
-### 2.3 RockKDF (Memory-Hard Key Derivation)
-
-RockKDF defends against GPU and ASIC mass-parallel dictionary attacks through memory-bandwidth-bound execution.
-
-* **Inputs**: Password $P$, 32-byte salt $S$, Memory Cost $M$ (KB), Time Cost $T$ (passes).
-* **Memory Allocation**: $N = (M \times 1024) / 64$ blocks of 64 bytes.
-* **Phase 1 (Seed)**: Absorb $M, T, S, P$ into RockSponge-512; sequentially squeeze memory grid.
-* **Phase 2 (Memory Mixing)**: For $t = 0 \dots T-1$ and $i = 0 \dots N-1$:
-  - Pseudo-random non-linear block indexing: $p = \text{uint64}(B[prev]) \pmod N$.
-  - State update: $B[i] = \text{RockSpongePermute}(B[i] \oplus B[prev] \oplus B[p] \oplus RC)$.
-* **Phase 3 (Domain-Separated Subkey Extraction)**:
-  Extracts 4 distinct 256-bit subkeys via separate domain tags:
-  - $K_{enc}$ (Core Encryption Key)
-  - $K_{white}$ (Dynamic Keystream Whitening Key)
-  - $K_{mac}$ (Payload / Chunk Authenticator Key)
-  - $K_{hdr}$ (Header Integrity Key)
-* **Zero-Trust Key Isolation**: Compromise of any subkey reveals zero information regarding any other subkey or master secret.
+### C Core Library Subsystems
+* [`mem.c`](file:///home/dwip/Downloads/project/RockCrypter/src/mem.c) / [`mem.h`](file:///home/dwip/Downloads/project/RockCrypter/include/mem.h): Constant-time primitives, compiler write-barrier zeroization, `mlock` page locking, canary guards.
+* [`entropy.c`](file:///home/dwip/Downloads/project/RockCrypter/src/entropy.c) / [`entropy.h`](file:///home/dwip/Downloads/project/RockCrypter/include/entropy.h): Linux CSPRNG `getrandom(2)` syscall with hardware CPU jitter harvesting.
+* [`sponge.c`](file:///home/dwip/Downloads/project/RockCrypter/src/sponge.c) / [`sponge.h`](file:///home/dwip/Downloads/project/RockCrypter/include/sponge.h): 512-bit wide-state cryptographic sponge permutation primitive (24-round $\chi$-transformations).
+* [`core.c`](file:///home/dwip/Downloads/project/RockCrypter/src/core.c) / [`core.h`](file:///home/dwip/Downloads/project/RockCrypter/include/core.h): 32-round SP-ARX-256 symmetric block cipher.
+* [`matrix.c`](file:///home/dwip/Downloads/project/RockCrypter/src/matrix.c) / [`matrix.h`](file:///home/dwip/Downloads/project/RockCrypter/include/matrix.h): Constant-time Galois Field GF($2^8$) arithmetic, Horner polynomial evaluation, MDS 4x4 / 8x8 diffusion.
+* [`kdf.c`](file:///home/dwip/Downloads/project/RockCrypter/src/kdf.c) / [`kdf.h`](file:///home/dwip/Downloads/project/RockCrypter/include/kdf.h): 1 MiB base memory-hard key derivation & 5-subkey extraction.
+* [`mac.c`](file:///home/dwip/Downloads/project/RockCrypter/src/mac.c) / [`mac.h`](file:///home/dwip/Downloads/project/RockCrypter/include/mac.h): Keyed duplex sponge message authentication code.
+* [`hkdf.c`](file:///home/dwip/Downloads/project/RockCrypter/src/hkdf.c) / [`hkdf.h`](file:///home/dwip/Downloads/project/RockCrypter/include/hkdf.h): RFC 5869 HMAC/Sponge Extract-and-Expand Key Derivation Function.
+* [`sponge_hash.c`](file:///home/dwip/Downloads/project/RockCrypter/src/sponge_hash.c) / [`sponge_hash.h`](file:///home/dwip/Downloads/project/RockCrypter/include/sponge_hash.h): 256-bit and 512-bit cryptographic hash functions.
+* [`aead.c`](file:///home/dwip/Downloads/project/RockCrypter/src/aead.c) / [`aead.h`](file:///home/dwip/Downloads/project/RockCrypter/include/aead.h): Dual-layer cascaded AEAD envelope format (`.cvlt`).
+* [`stream.c`](file:///home/dwip/Downloads/project/RockCrypter/src/stream.c) / [`stream.h`](file:///home/dwip/Downloads/project/RockCrypter/include/stream.h): 1 MiB base chunked streaming with ratcheted tamper-proof chain.
+* [`ecdh.c`](file:///home/dwip/Downloads/project/RockCrypter/src/ecdh.c) / [`ecdh.h`](file:///home/dwip/Downloads/project/RockCrypter/include/ecdh.h): Curve25519 (X25519) Montgomery scalar multiplication, scalar clamping, low-order point defenses.
+* [`keywrap.c`](file:///home/dwip/Downloads/project/RockCrypter/src/keywrap.c) / [`keywrap.h`](file:///home/dwip/Downloads/project/RockCrypter/include/keywrap.h): NIST SP 800-38F / RFC 3394 SP-ARX Key Wrap algorithm.
+* [`hybrid.c`](file:///home/dwip/Downloads/project/RockCrypter/src/hybrid.c) / [`hybrid.h`](file:///home/dwip/Downloads/project/RockCrypter/include/hybrid.h): Asymmetric Hybrid Public-Key Encryption envelope format (`CVHYB100`).
+* [`shamir.c`](file:///home/dwip/Downloads/project/RockCrypter/src/shamir.c) / [`shamir.h`](file:///home/dwip/Downloads/project/RockCrypter/include/shamir.h): Shamir's Secret Sharing ($k$-of-$n$ threshold scheme over GF($2^8$)).
+* [`armoring.c`](file:///home/dwip/Downloads/project/RockCrypter/src/armoring.c) / [`armoring.h`](file:///home/dwip/Downloads/project/RockCrypter/include/armoring.h): RFC 4880 OpenPGP-style ASCII armoring with 24-bit Radix-64 CRC checksums.
+* [`keyfile.c`](file:///home/dwip/Downloads/project/RockCrypter/src/keyfile.c) / [`keyfile.h`](file:///home/dwip/Downloads/project/RockCrypter/include/keyfile.h): Password-protected encrypted keybags and armored export/import.
+* [`prng.c`](file:///home/dwip/Downloads/project/RockCrypter/src/prng.c) / [`prng.h`](file:///home/dwip/Downloads/project/RockCrypter/include/prng.h): Sponge-based CSPRNG with backtracking resistance, forward secrecy, and auto-reseed.
+* [`cert.c`](file:///home/dwip/Downloads/project/RockCrypter/src/cert.c) / [`cert.h`](file:///home/dwip/Downloads/project/RockCrypter/include/cert.h): Public key identity certificates (`.cvcert`) with timestamps, usage flags, and fingerprints.
+* [`package.c`](file:///home/dwip/Downloads/project/RockCrypter/src/package.c) / [`package.h`](file:///home/dwip/Downloads/project/RockCrypter/include/package.h): Self-contained secure transport containers (`.cvpkg`) with manifest and integrity seals.
+* [`diffie.c`](file:///home/dwip/Downloads/project/RockCrypter/src/diffie.c) / [`diffie.h`](file:///home/dwip/Downloads/project/RockCrypter/include/diffie.h): Authenticated Diffie-Hellman handshake state machine.
+* [`audit.c`](file:///home/dwip/Downloads/project/RockCrypter/src/audit.c) / [`audit.h`](file:///home/dwip/Downloads/project/RockCrypter/include/audit.h): Cryptographic security auditing and memory bounds invariant checks.
+* [`vault.h`](file:///home/dwip/Downloads/project/RockCrypter/include/vault.h): Umbrella architecture header.
+* [`cli.c`](file:///home/dwip/Downloads/project/RockCrypter/src/cli.c): Standalone C command-line interface.
 
 ---
 
-### 2.4 RockMAC (Keyed Duplex Authenticator)
+## 3. High-Assurance Security Architecture
 
-RockMAC generates a 256-bit authentication tag using RockSponge-512 in keyed duplex mode:
-1. Initialize with domain tag `0x524F434B4D414331` ("ROCKMAC1").
-2. Absorb $K_{mac}$ (32 bytes) and permute.
-3. Stream data in 32-byte blocks.
-4. Absorb 64-bit big-endian length descriptor (prevention of length extension attacks).
-5. Squeeze 32-byte tag.
-6. Verification: Constant-time execution via `rock_ct_memcmp`.
+### 3.1 Cascaded Dual-Layer Encryption (Multi-Primitive Defense)
+To provide defense-in-depth against cryptanalytic breakthroughs on any individual primitive, CryptoVault deploys a **cascaded encryption construction**:
+1. **Layer 1 (Inner Cipher)**: SP-ARX-256 in counter mode with dynamic key-dependent whitening ($K_{enc}, K_{white}$).
+2. **Layer 2 (Outer Stream)**: 512-bit wide sponge duplex stream cipher keyed with domain-separated $K_{cascade}$ and nonce.
+
+$$C = P \oplus \text{Keystream}_{\text{SP-ARX}}(K_{enc}, K_{white}, \text{Nonce}, \text{Ctr}) \oplus \text{Keystream}_{\text{Sponge}}(K_{cascade}, \text{Nonce}, \text{Ctr})$$
+
+An adversary must break *both* structurally distinct mathematical primitives (SP-ARX network + non-linear $\chi$-sponge permutation) to compromise confidentiality.
+
+### 3.2 1 MiB Base Encryption & Memory Hardness
+* **Memory-Hard KDF Baseline**: Defaults to 1 MiB (1,024 KB) allocated RAM scratchpad with pseudo-random sponge wandering passes to defeat GPU/ASIC parallel dictionary attacks.
+* **1 MiB Streaming Chunks**: Large documents and data streams are chunked into 1,048,576-byte (1 MiB) blocks, optimizing Linux sequential disk I/O and matching modern operating system page cache semantics.
+
+### 3.3 Ratcheted Chained Sponge Authentication (Tamper-Proof Chaining)
+For streaming file encryption, chunk tags are ratcheted sequentially:
+$$R_0 = K_{mac} \oplus \text{Nonce}$$
+$$T_i = \text{MAC}_{K_{mac}}(R_i \parallel \text{Meta}_i \parallel C_i)$$
+$$R_{i+1} \leftarrow T_i$$
+
+Because each chunk tag $T_i$ absorbs the previous chunk's tag $R_i$, chunks cannot be swapped, reordered, deleted, or truncated without causing immediate authentication failure.
+
+### 3.4 Asymmetric Hybrid Public-Key Encryption (HPKE)
+Enables secure transmission without prior secret sharing:
+1. Sender generates ephemeral keypair $(d_e, Q_e)$ on Curve25519.
+2. Sender computes shared secret $S = \text{X25519}(d_e, Q_{recipient})$.
+3. Sender derives Key-Encrypting Key (KEK) via HKDF-Extract-and-Expand.
+4. Sender generates random 256-bit session key $K_{session}$ and wraps it using SP-ARX Key Wrap.
+5. Sender encrypts file payload using $K_{session}$ under 1 MiB streaming AEAD.
+6. Recipient decapsulates $K_{session}$ with private key $d_{recipient}$ and decrypts file.
+
+### 3.5 Information-Theoretic Multi-Party Secret Sharing
+Shamir's $(k, n)$ threshold scheme over Galois Field $\text{GF}(2^8)$:
+- Secret is encoded as constant term $a_0$ in polynomial $f(x) = a_0 + a_1 x + \dots + a_{k-1} x^{k-1}$.
+- Any $k$ distinct coordinates $(x_i, f(x_i))$ reconstruct $a_0$ via Lagrange interpolation.
+- Any $k-1$ shares provide mathematically zero information about $a_0$.
+- Human-readable formatting with embedded 32-bit CRC checksum guarantees error rejection.
 
 ---
 
-## 3. Envelope Framing & Zero-Trust Architecture
+## 4. Binary Envelope Formats
 
-### 3.1 Single-Buffer Envelope Layout
-
+### 4.1 AEAD Envelope Format (`.cvlt`)
 ```
 +-------------------------------------------------------------------------+
-|                              Header (124 bytes)                         |
-|  - Magic: "ROCKCRPT" (8 bytes)                                          |
-|  - Version: 0x0100 (2 bytes)                                            |
-|  - Cipher Suite: 0x0001 (2 bytes)                                       |
-|  - Flags: uint32 (4 bytes)                                              |
-|  - KDF Memory Cost (KB): uint32 (4 bytes)                               |
-|  - KDF Time Cost (Passes): uint32 (4 bytes)                             |
-|  - Salt: 32 bytes                                                       |
-|  - Nonce: 24 bytes (192-bit CSPRNG)                                     |
-|  - Payload Length: uint64 (8 bytes)                                     |
-|  - AAD Length: uint32 (4 bytes)                                         |
-|  - Header MAC: 32 bytes (Keyed with K_hdr over all preceding fields)    |
+| Magic: "CVLTv100" (8 bytes)                                            |
+| Version: 0x0100 (2 bytes) | CipherSuite: 0x0001 (2 bytes)              |
+| Flags: 0x0000 (2 bytes)   | Reserved: 0x0000 (2 bytes)                 |
+| KDF Memory Cost (4 bytes) | KDF Time Cost (4 bytes)                    |
+| Salt: 32 bytes (CSPRNG Entropy)                                        |
+| Nonce: 24 bytes (Unique per encryption)                                |
+| Plaintext Payload Length: uint64_t (8 bytes)                           |
+| Associated Authenticated Data (AAD) Length: uint32_t (4 bytes)         |
+| Header Authentication MAC: 32 bytes (Keyed sponge over header bytes)   |
 +-------------------------------------------------------------------------+
-|                  Associated Authenticated Data (AAD) [optional]         |
+| Associated Authenticated Data (AAD) [0 .. aad_len]                     |
 +-------------------------------------------------------------------------+
-|                        Ciphertext Payload (L bytes)                     |
+| Ciphertext Payload [0 .. payload_len]                                   |
 +-------------------------------------------------------------------------+
-|                  Payload Authentication Tag (32 bytes)                  |
+| Payload Authentication Tag: 32 bytes (Keyed sponge over payload & AAD) |
 +-------------------------------------------------------------------------+
 ```
 
-### 3.2 Streaming File Chunk Framing
-
-For files of arbitrary size, data is processed in 64 KB streaming chunks:
+### 4.2 Secure Container Packaging (`.cvpkg`)
 ```
-[ Header (124 bytes) ]
-[ AAD (if present) ]
-[ Chunk 0: uint32 len | uint8 is_final | uint64 idx | Ciphertext | Tag (32 bytes) ]
-[ Chunk 1: uint32 len | uint8 is_final | uint64 idx | Ciphertext | Tag (32 bytes) ]
-...
-[ Chunk N (is_final = 1) ]
++-------------------------------------------------------------------------+
+| Package Magic: "CVPKG200" (8 bytes)                                     |
+| Package Version: 0x0200 (2 bytes) | Mode: Hybrid / Password (2 bytes)  |
+| Creation Timestamp: uint64_t UTC seconds (8 bytes)                     |
+| Original Filename: 128 bytes (UTF-8, null-padded)                      |
+| Encrypted Payload Length: uint64_t (8 bytes)                           |
+| Package Seal: 32 bytes (SHA-3 / Sponge digest of header and payload)   |
++-------------------------------------------------------------------------+
+| Encrypted Inner Container (.cvlt format) [0 .. payload_len]            |
++-------------------------------------------------------------------------+
 ```
-
-* **Chunk Counter Verification**: Each chunk MAC commits to the monotonic `chunk_idx`. Reordering or deleting chunks results in immediate authentication rejection.
-* **Fail-Secure File Protection**: If any chunk verification fails, the decrypted destination file is immediately unlinked and securely deleted from disk.
